@@ -1,0 +1,155 @@
+---
+title: "Personal Activity Prediction Model"
+author: "Chao Yuan"
+output: html_document
+---
+
+##Synopsis
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement ¨C a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, 6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways, data from accelerometers on the belt, forearm, arm, and dumbell of the 6 are collected and used to build a model to classify the 5 different personal activity. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har. The final classification model built has an accuracy more than 99%.
+
+
+##Function library
+Load the required libries for this project:
+```{r, cache=TRUE}
+suppressMessages(library(caret))
+suppressMessages(library(randomForest))
+```
+
+
+##Data Processing
+We use the full [Labeled Data][1] (source: http://groupware.les.inf.puc-rio.br/har) to build and test our prediction model, then the model is used to predict 20 [Unlabeled Data][2]. All data are preprocessed, only a subset of variables are selected and the data format are converted so that the machine learning algorithms are easy to use.
+
+[1]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv "Labeled Data"
+[2]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv "Unlabeled Data"
+
+###Loading the data
+We first download the data file and read it into memory (On windows system, the original url starts with "https://" must be transformed to starts with "http://", in order to use the download.file method, please refer to the last section: Comments -- analysis environment).
+
+```{r, cache=TRUE}
+pmlTrainingDataUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+pmlTestingDataUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(pmlTrainingDataUrl, destfile='pml-training.csv')
+download.file(pmlTestingDataUrl, destfile='pml-testing.csv')
+
+pmlTraining <- read.csv('pml-training.csv', row.names=1, na.strings=c('', '#DIV/0!', 'NA'))
+pmlTesting <- read.csv('pml-testing.csv', row.names=1, na.strings=c('', '#DIV/0!', 'NA'))
+predictorNames <- intersect(names(pmlTraining), names(pmlTesting))
+```
+
+###Create Data Partition
+Rather than split the full labeled data into 3 subset (training/testing/validation), we only split it into training set (with 80% samples) and testing set (with 20% samples), then we use the Cross-validation technique to evaluate the candidate models on the training set at the same time of model building (by using the result of train function in the 'caret' library). The expected out of sample error are estimated by applying the final selected model on the testing set once.
+
+
+```{r, cache=TRUE}
+set.seed(123321)
+inTrain = createDataPartition(pmlTraining$classe, p = 0.8)[[1]]
+training = pmlTraining[ inTrain,]
+testing = pmlTraining[-inTrain,]
+```
+
+###Variable selection
+Only variables contains No NA are selected as predictors. the 'classe' variable is our expected outcome. we use the predictors and outcome to build our formula string.
+
+
+```{r, cache=TRUE}
+naCounts <- sapply(predictorNames, function(x){
+  elements <- training[[x]]
+  naCount <- sum(is.na(elements))
+})
+
+fullValueVars <- names(naCounts[naCounts == 0])
+formulaStr <- paste('classe', paste(fullValueVars, collapse = " + "), sep=' ~ ')
+```
+
+
+##Model creation and quality
+Create Some Classification models here then print the estimated accuracy (and other metrics) given by cross-validation (by bootstrap for random forest, please refer to http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr). Then select the best model as our choice.
+
+1. Classification Tree Model (CART)
+```{r, cache=TRUE}
+modelFitDt <- suppressWarnings(train(as.formula(formulaStr), method='rpart', data=training, trControl=trainControl(method='cv')))
+modelFitDt$results
+modelFitDt$bestTune
+
+```
+
+
+2. Naive Bayes Model (NB)
+```{r, cache=TRUE}
+modelFitNb <- suppressWarnings(train(as.formula(formulaStr), method="nb", data=training, trControl=trainControl(method='cv')))
+modelFitNb$results
+modelFitNb$bestTune
+```
+
+
+3. Linear Discriminant Analysis Model (LDA)
+```{r, cache=TRUE}
+modelFitLda <- suppressWarnings(train(as.formula(formulaStr), method="lda", data=training, trControl=trainControl(method='cv')))
+modelFitLda$results
+modelFitLda$bestTune
+```
+
+
+4. Random Forest (RF)
+```{r, cache=TRUE}
+modelFitRf <- suppressWarnings(randomForest(as.formula(formulaStr), data=training, importance=TRUE))
+```
+
+
+From http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr, unbiasied accuracy could be calculated by:
+```{r, cache=TRUE}
+1-mean(modelFitRf$err.rate[,1])
+```
+
+##Model Selection and Expected Out of Sample Error
+Based on the cross-validation result, the random forest model has the highest accuracy, so we select it as our final choise. Now we use the test set to calculate the expected out of sample error:
+
+```{r, cache=TRUE}
+CalculateAccuracyFromTable <- function(tab) {
+  ok <- 0
+  for (i in 1:dim(tab)[1]) ok <- ok + tab[i, i]
+  ok / sum(tab)
+}
+
+TestModelAccuracy <- function(model) {
+  pred <- predict(model, testing)
+  resultTable <- table(pred, testing$classe)
+  CalculateAccuracyFromTable(resultTable)
+}
+
+accuracy <- TestModelAccuracy(modelFitRf)
+accuracy
+```
+
+The expected out of sample error rate is:
+```{r}
+1-accuracy
+```
+
+
+##Predict the unlabeled data
+Finally we use the model to predict the unlabeled 20 samples:
+
+```{r}
+pmlTraining$problem_id <- '-1'
+pmlTesting$classe <- 'X'
+finalPred <- rbind(pmlTraining, pmlTesting)
+finalPred <- finalPred[(nrow(finalPred)-19):nrow(finalPred), ]
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+answer <- predict(modelFitRf, finalPred)
+names(answer) <- finalPred$problem_id
+
+pml_write_files(answer)
+```
+
+
+
+
